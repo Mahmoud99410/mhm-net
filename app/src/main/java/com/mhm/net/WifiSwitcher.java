@@ -1,9 +1,7 @@
 package com.mhm.net;
 
 import android.Manifest;
-import android.app.PendingIntent;
 import android.content.Context;
-import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Network;
 import android.net.wifi.ScanResult;
@@ -11,7 +9,6 @@ import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.SystemClock;
-import android.provider.Settings;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -215,17 +212,10 @@ public final class WifiSwitcher {
         if (!best.equals(cur)) notifySwitch(c, best, best.equals(s1) ? a : b);
     }
 
+    /** No notifications: the suggestion is shown inside the app (Networks tab). */
     private static void notifySwitch(Context c, String ssid, SpeedTest.Result r) {
-        Intent i = Build.VERSION.SDK_INT >= 29
-                ? new Intent(Settings.Panel.ACTION_WIFI)
-                : new Intent(Settings.ACTION_WIFI_SETTINGS);
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
-        PendingIntent pi = PendingIntent.getActivity(c, 99, i, flags);
         String speed = r != null ? " (↓ " + Fmt.speed(r.dl) + ")" : "";
-        Notif.alert(c, "الشبكة الأسرع الآن: " + ssid,
-                "اضغط هنا للانتقال إلى " + ssid + speed, pi);
-        Prefs.log(c, "تم إرسال تنبيه للانتقال يدوياً إلى " + ssid);
+        Prefs.p(c).edit().putString("suggest", ssid).apply();
+        Prefs.log(c, "⚠️ الأسرع الآن " + ssid + speed + " — أندرويد منع الانتقال التلقائي، انتقل يدوياً");
     }
 }

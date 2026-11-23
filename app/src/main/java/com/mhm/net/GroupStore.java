@@ -37,7 +37,37 @@ public final class GroupStore {
             "com.kwai.video", "com.likee.video", "video.like", "com.vkontakte.android"
     };
 
-    /** Installed social apps: known package names + apps Android itself categorises as "social". */
+    /** Apps that must never be blocked (blocking them breaks notifications / updates of other apps). */
+    static final String[] PROTECTED = {
+            "com.google.android.gms", "com.google.android.gsf", "com.android.vending",
+            "com.google.android.gms.policy_sidecar_aps", "com.google.android.ext.services",
+            "com.android.providers.downloads", "com.android.phone", "com.android.systemui",
+            "com.android.settings", "android"
+    };
+
+    public static boolean isProtected(String pkg) {
+        if (pkg == null) return true;
+        for (String p : PROTECTED) if (p.equals(pkg)) return true;
+        return pkg.startsWith("com.google.android.gms.");
+    }
+
+    /** Removes protected apps from saved groups and from the block rules (fixes older versions). */
+    public static synchronized void cleanProtected(Context c) {
+        if (Prefs.p(c).getString("groups", null) != null) {
+            List<Group> all = load(c);
+            boolean changed = false;
+            for (Group g : all) {
+                Iterator<String> it = g.pkgs.iterator();
+                while (it.hasNext()) if (isProtected(it.next())) { it.remove(); changed = true; }
+            }
+            if (changed) save(c, all);
+        }
+        for (FirewallStore.Rule r : FirewallStore.load(c)) {
+            if (isProtected(r.pkg)) FirewallStore.remove(c, r.pkg);
+        }
+    }
+
+    /** Installed social apps: known package names + launchable apps Android itself categorises as "social". */
     public static List<String> detectSocial(Context c) {
         PackageManager pm = c.getPackageManager();
         Set<String> out = new LinkedHashSet<>();
@@ -46,10 +76,15 @@ public final class GroupStore {
         }
         if (Build.VERSION.SDK_INT >= 26) {
             for (ApplicationInfo ai : pm.getInstalledApplications(0)) {
+                String p = ai.packageName;
                 if (ai.category == ApplicationInfo.CATEGORY_SOCIAL
                         && (ai.flags & ApplicationInfo.FLAG_SYSTEM) == 0
-                        && !ai.packageName.equals(c.getPackageName())) {
-                    out.add(ai.packageName);
+                        && (ai.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0
+                        && !p.equals(c.getPackageName())
+                        && !isProtected(p)
+                        && !(p.startsWith("com.google.") && !p.equals("com.google.android.youtube"))
+                        && pm.getLaunchIntentForPackage(p) != null) {
+                    out.add(p);
                 }
             }
         }
@@ -77,7 +112,10 @@ public final class GroupStore {
                 g.id = o.getString("id");
                 g.name = o.getString("name");
                 JSONArray p = o.getJSONArray("pkgs");
-                for (int k = 0; k < p.length(); k++) g.pkgs.add(p.getString(k));
+                for (int k = 0; k < p.length(); k++) {
+                    String pkg = p.getString(k);
+                    if (!isProtected(pkg)) g.pkgs.add(pkg);
+                }
                 out.add(g);
             }
         } catch (Exception ignored) {}

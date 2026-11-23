@@ -12,11 +12,16 @@ import java.net.URLConnection;
 import java.util.Random;
 
 /**
- * Measures download / upload speed (bytes per second) and ping over a specific network,
+ * Measures the real download / upload capacity (bytes per second) and ping of a specific network,
  * using Cloudflare's public speed-test endpoints.
  */
 public final class SpeedTest {
     private SpeedTest() {}
+
+    public static final int PHASE_PING = 0, PHASE_DOWN = 1, PHASE_UP = 2;
+
+    /** Live progress while a test runs (called from the test thread). */
+    public interface Progress { void update(int phase, double bytesPerSec); }
 
     public static class Result {
         public boolean ok;
@@ -31,21 +36,30 @@ public final class SpeedTest {
 
     private static final String DOWN = "https://speed.cloudflare.com/__down?bytes=";
     private static final String UP = "https://speed.cloudflare.com/__up";
-    private static final long DL_MS = 8000, UL_MS = 7000;
 
-    public static Result run(Network net) {
+    /** Full test (used when comparing the two Wi-Fi networks). */
+    public static Result run(Network net) { return run(net, false, null); }
+
+    /**
+     * @param quick shorter test (about 8 seconds, max ~40 MB) used for the home screen.
+     */
+    public static Result run(Network net, boolean quick, Progress p) {
+        long dlMs = quick ? 5000 : 8000, ulMs = quick ? 4000 : 7000;
+        long dlMax = quick ? 30L * 1024 * 1024 : 60L * 1024 * 1024;
+        long ulMax = quick ? 10L * 1024 * 1024 : 40L * 1024 * 1024;
         Result r = new Result();
         r.time = System.currentTimeMillis();
         try {
+            if (p != null) p.update(PHASE_PING, 0);
             r.pingMs = ping(net);
-            r.dl = download(net);
+            r.dl = download(net, dlMs, dlMax, p);
             r.ok = r.dl > 0;
         } catch (Exception e) {
             r.error = e.getClass().getSimpleName() + (e.getMessage() != null ? ": " + e.getMessage() : "");
             return r;
         }
         try {
-            r.ul = upload(net);
+            r.ul = upload(net, ulMs, ulMax, p);
         } catch (Exception e) {
             r.ul = 0;
         }
@@ -59,7 +73,7 @@ public final class SpeedTest {
         h.setConnectTimeout(8000);
         h.setReadTimeout(10000);
         h.setUseCaches(false);
-        h.setRequestProperty("User-Agent", "MHM-NET/1.0");
+        h.setRequestProperty("User-Agent", "MHM-NET/1.2");
         return h;
     }
 
@@ -78,12 +92,12 @@ public final class SpeedTest {
         return best;
     }
 
-    private static double download(Network net) throws IOException {
-        HttpURLConnection h = open(net, DOWN + "60000000");
+    private static double download(Network net, long durMs, long maxBytes, Progress p) throws IOException {
+        HttpURLConnection h = open(net, DOWN + maxBytes);
         InputStream in = h.getInputStream();
         byte[] buf = new byte[64 * 1024];
-        long first = -1, bytes = 0, end = 0;
-        long deadline = SystemClock.elapsedRealtime() + DL_MS;
+        long first = -1, bytes = 0, end = 0, lastReport = 0;
+        long deadline = SystemClock.elapsedRealtime() + durMs;
         try {
             while (true) {
                 int n = in.read(buf);
@@ -91,6 +105,10 @@ public final class SpeedTest {
                 long now = SystemClock.elapsedRealtime();
                 if (first < 0) first = now; else bytes += n;
                 end = now;
+                if (p != null && now - lastReport >= 250 && now > first) {
+                    lastReport = now;
+                    p.update(PHASE_DOWN, bytes * 1000.0 / (now - first));
+                }
                 if (now > deadline) break;
             }
         } finally {
@@ -99,10 +117,12 @@ public final class SpeedTest {
         }
         long ms = end - first;
         if (first < 0 || ms <= 0) return 0;
-        return bytes * 1000.0 / ms;
+        double v = bytes * 1000.0 / ms;
+        if (p != null) p.update(PHASE_DOWN, v);
+        return v;
     }
 
-    private static double upload(Network net) throws IOException {
+    private static double upload(Network net, long durMs, long maxBytes, Progress p) throws IOException {
         HttpURLConnection h = open(net, UP);
         h.setDoOutput(true);
         h.setRequestMethod("POST");
@@ -111,13 +131,18 @@ public final class SpeedTest {
         byte[] buf = new byte[64 * 1024];
         new Random().nextBytes(buf);
         long start = SystemClock.elapsedRealtime();
-        long deadline = start + UL_MS;
+        long deadline = start + durMs, lastReport = 0;
         long bytes = 0;
         OutputStream out = h.getOutputStream();
         try {
-            while (SystemClock.elapsedRealtime() < deadline && bytes < 40L * 1024 * 1024) {
+            while (SystemClock.elapsedRealtime() < deadline && bytes < maxBytes) {
                 out.write(buf);
                 bytes += buf.length;
+                long now = SystemClock.elapsedRealtime();
+                if (p != null && now - lastReport >= 250 && now > start) {
+                    lastReport = now;
+                    p.update(PHASE_UP, bytes * 1000.0 / (now - start));
+                }
             }
             out.flush();
         } finally {
@@ -127,6 +152,8 @@ public final class SpeedTest {
         long ms = SystemClock.elapsedRealtime() - start;
         h.disconnect();
         if (ms <= 0) return 0;
-        return bytes * 1000.0 / ms;
+        double v = bytes * 1000.0 / ms;
+        if (p != null) p.update(PHASE_UP, v);
+        return v;
     }
 }

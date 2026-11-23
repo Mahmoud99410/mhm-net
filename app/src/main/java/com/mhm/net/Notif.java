@@ -21,9 +21,9 @@ public final class Notif {
         if (Build.VERSION.SDK_INT < 26) return;
         NotificationManager nm = c.getSystemService(NotificationManager.class);
         if (nm == null) return;
-        nm.createNotificationChannel(new NotificationChannel(CH_MONITOR, "مراقبة الشبكة والسرعة", NotificationManager.IMPORTANCE_LOW));
-        nm.createNotificationChannel(new NotificationChannel(CH_FIREWALL, "حجب التطبيقات", NotificationManager.IMPORTANCE_LOW));
-        nm.createNotificationChannel(new NotificationChannel(CH_ALERT, "تنبيهات الشبكة", NotificationManager.IMPORTANCE_DEFAULT));
+        nm.createNotificationChannel(new NotificationChannel(CH_FIREWALL, "تشغيل الحظر (لحظي)", NotificationManager.IMPORTANCE_MIN));
+        // remove channels used by older versions
+        try { nm.deleteNotificationChannel(CH_MONITOR); nm.deleteNotificationChannel(CH_ALERT); } catch (Exception ignored) {}
     }
 
     public static PendingIntent openApp(Context c, int tab) {

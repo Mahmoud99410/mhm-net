@@ -68,10 +68,17 @@ public class MainActivity extends Activity {
     private final ExecutorService bg = Executors.newSingleThreadExecutor();
 
     // live speed
-    private TextView hdrLive, heroDl, heroUl, heroNet, heroPeak, progressTv;
+    private TextView hdrLive, heroDl, heroUl, heroNet, heroStatus, heroBtn, heroLive, heroLink, progressTv;
     private SparkView spark;
     private long lastRx = -1, lastTx, lastT;
-    private double peakDl, peakUl;
+
+    // quick speed test shown on the home screen
+    private volatile boolean testing;
+    private volatile int testPhase;
+    private volatile double testDl, testUl;
+    private SpeedTest.Result quick;
+    private String quickLabel, quickError;
+    private boolean autoTested;
 
     private Runnable pendingVpn;
     private List<AppItem> appsCache;
@@ -91,7 +98,6 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle b) {
         Ui.apply(this);
         super.onCreate(b);
-        Notif.channels(this);
         getWindow().setStatusBarColor(Ui.BG);
         getWindow().setNavigationBarColor(Ui.NAV);
         if (!Ui.dark && Build.VERSION.SDK_INT >= 23) {
@@ -114,7 +120,7 @@ public class MainActivity extends Activity {
         titles.addView(Ui.text(this, "مراقبة وإدارة الإنترنت", 12, Ui.SUB, false));
         header.addView(titles, Ui.weight());
 
-        hdrLive = Ui.text(this, "↓ 0.00  ↑ 0.00", 12, Ui.TEXT, true);
+        hdrLive = Ui.text(this, "↓ --  ↑ -- MB/s", 12, Ui.TEXT, true);
         hdrLive.setBackground(Ui.round(this, Ui.CARD, 20));
         hdrLive.setPadding(dp(12), dp(6), dp(12), dp(6));
         hdrLive.setTextDirection(View.TEXT_DIRECTION_LTR);
@@ -176,10 +182,15 @@ public class MainActivity extends Activity {
 
         tab = getIntent().getIntExtra("tab", TAB_HOME);
         askPermissions();
-        if (Prefs.autoSwitch(this)) MonitorService.start(this);
-        if (!FirewallStore.load(this).isEmpty() && VpnService.prepare(this) == null) {
-            FirewallVpnService.refresh(this);
-        }
+        bg.execute(new Runnable() {
+            @Override public void run() {
+                GroupStore.cleanProtected(MainActivity.this);
+                SwitchJob.sync(MainActivity.this);
+                if (!FirewallStore.load(MainActivity.this).isEmpty() && VpnService.prepare(MainActivity.this) == null) {
+                    FirewallVpnService.refresh(MainActivity.this);
+                }
+            }
+        });
     }
 
     @Override
@@ -216,15 +227,11 @@ public class MainActivity extends Activity {
             if (lastRx >= 0 && now > lastT) {
                 double sec = (now - lastT) / 1000.0;
                 double d = Math.max(0, (rx - lastRx) / sec), u = Math.max(0, (tx - lastTx) / sec);
-                peakDl = Math.max(peakDl, d);
-                peakUl = Math.max(peakUl, u);
-                hdrLive.setText(String.format(Locale.US, "↓ %.2f  ↑ %.2f MB/s", d / MB, u / MB));
                 spark.push(d, u);
-                if (heroDl != null) {
-                    heroDl.setText(String.format(Locale.US, "%.2f", d / MB));
-                    heroUl.setText(String.format(Locale.US, "%.2f", u / MB));
+                if (heroLive != null) {
+                    heroLive.setText(String.format(Locale.US, "↓ %.2f  ↑ %.2f MB/s", d / MB, u / MB));
                     heroNet.setText(NetUtil.activeLabel(MainActivity.this));
-                    heroPeak.setText(String.format(Locale.US, "أعلى سرعة منذ فتح التطبيق:   ↓ %.2f   ↑ %.2f MB/s", peakDl / MB, peakUl / MB));
+                    heroLink.setText(linkText());
                 }
             }
             lastRx = rx; lastTx = tx; lastT = now;
@@ -253,7 +260,7 @@ public class MainActivity extends Activity {
     private void showTab(int i) {
         tab = i;
         gen++;
-        heroDl = heroUl = heroNet = heroPeak = progressTv = null;
+        heroDl = heroUl = heroNet = heroStatus = heroBtn = heroLive = heroLink = progressTv = null;
         for (int k = 0; k < navItems.length; k++) {
             boolean sel = k == i;
             navItems[k].setBackground(sel ? Ui.round(this, Ui.alpha(Ui.ACCENT, 0x24), 16) : null);
@@ -370,7 +377,7 @@ public class MainActivity extends Activity {
     private void buildHome() {
         addUsageWarning();
 
-        // ---- hero: live speed
+        // ---- hero: real internet speed (speed test) + live usage
         LinearLayout hero = Ui.vbox(this);
         hero.setBackground(Ui.gradient(this, Ui.HERO1, Ui.HERO2, 22));
         hero.setPadding(dp(18), dp(16), dp(18), dp(14));
@@ -380,7 +387,7 @@ public class MainActivity extends Activity {
         hero.setLayoutParams(hlp);
 
         LinearLayout top = Ui.hbox(this);
-        top.addView(Ui.text(this, "⚡ السرعة الحية", 15, 0xFFFFFFFF, true), Ui.weight());
+        top.addView(Ui.text(this, "⚡ سرعة الإنترنت", 15, 0xFFFFFFFF, true), Ui.weight());
         heroNet = Ui.text(this, NetUtil.activeLabel(this), 11, 0xFFFFFFFF, true);
         heroNet.setBackground(Ui.round(this, 0x33FFFFFF, 20));
         heroNet.setPadding(dp(10), dp(4), dp(10), dp(4));
@@ -390,22 +397,53 @@ public class MainActivity extends Activity {
 
         LinearLayout nums = Ui.hbox(this);
         nums.setPadding(0, dp(12), 0, 0);
-        heroDl = Ui.text(this, "0.00", 40, 0xFFFFFFFF, true);
-        heroUl = Ui.text(this, "0.00", 40, 0xFFFDE68A, true);
+        heroDl = Ui.text(this, "--", 40, 0xFFFFFFFF, true);
+        heroUl = Ui.text(this, "--", 40, 0xFFFDE68A, true);
         nums.addView(speedColumn("↓ تنزيل", heroDl), Ui.weight());
         nums.addView(speedColumn("↑ رفع", heroUl), Ui.weight());
         hero.addView(nums);
 
+        heroStatus = Ui.text(this, "", 12, 0xE6FFFFFF, false);
+        heroStatus.setPadding(0, dp(4), 0, 0);
+        hero.addView(heroStatus);
+
+        heroBtn = Ui.text(this, "↻ قياس الآن", 14, 0xFFFFFFFF, true);
+        heroBtn.setGravity(Gravity.CENTER);
+        heroBtn.setBackground(Ui.round(this, 0x33FFFFFF, 14));
+        heroBtn.setPadding(0, dp(10), 0, dp(10));
+        heroBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { startQuickTest(); }
+        });
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP);
+        blp.topMargin = dp(10);
+        hero.addView(heroBtn, blp);
+
+        View div = new View(this);
+        div.setBackgroundColor(0x33FFFFFF);
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(Ui.MATCH, dp(1));
+        dlp.topMargin = dp(14);
+        hero.addView(div, dlp);
+
+        LinearLayout liveRow = Ui.hbox(this);
+        liveRow.setPadding(0, dp(10), 0, 0);
+        liveRow.addView(Ui.text(this, "الاستخدام الآن", 12, 0xCCFFFFFF, true), Ui.weight());
+        heroLive = Ui.text(this, "↓ 0.00  ↑ 0.00 MB/s", 12, 0xFFFFFFFF, true);
+        heroLive.setTextDirection(View.TEXT_DIRECTION_LTR);
+        liveRow.addView(heroLive);
+        hero.addView(liveRow);
+
         if (spark.getParent() != null) ((ViewGroup) spark.getParent()).removeView(spark);
         spark.setColors(0xFFFFFFFF, 0xFFFDE68A);
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(Ui.MATCH, dp(78));
-        slp.topMargin = dp(8);
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(Ui.MATCH, dp(56));
+        slp.topMargin = dp(6);
         hero.addView(spark, slp);
 
-        heroPeak = Ui.text(this, "أعلى سرعة منذ فتح التطبيق: —", 11, 0xD9FFFFFF, false);
-        heroPeak.setPadding(0, dp(6), 0, 0);
-        hero.addView(heroPeak);
+        heroLink = Ui.text(this, "", 11, 0xCCFFFFFF, false);
+        heroLink.setPadding(0, dp(6), 0, 0);
+        hero.addView(heroLink);
         content.addView(hero);
+        updateHero();
+        maybeAutoTest();
 
         // ---- usage
         content.addView(Ui.section(this, "استهلاك الإنترنت"));
@@ -448,6 +486,107 @@ public class MainActivity extends Activity {
         }, new Cb<long[][]>() {
             @Override public void on(long[][] d) { fillDays(days, d); }
         });
+    }
+
+    private static String mbs(double bps) { return String.format(Locale.US, "%.2f", bps / MB); }
+
+    private String linkText() {
+        if (NetUtil.wifiNetwork(this) != null) {
+            int mbps = NetUtil.wifiLinkMbps(this);
+            if (mbps > 0) return String.format(Locale.US, "سرعة الاتصال بالراوتر: %d Mbps (≈ %.1f MB/s كحد أقصى)", mbps, mbps / 8.0);
+            return "";
+        }
+        int[] est = NetUtil.cellularEstimateKbps(this);
+        if (est != null && est[0] > 0) {
+            return String.format(Locale.US, "تقدير أندرويد لبيانات الهاتف: ↓ %.1f MB/s  ↑ %.1f MB/s", est[0] / 8192.0, est[1] / 8192.0);
+        }
+        return "";
+    }
+
+    /** Refreshes the hero card and the header pill from the current test state. */
+    private void updateHero() {
+        if (testing) {
+            hdrLive.setText("↓ " + mbs(testDl) + "  ↑ " + mbs(testUl) + " MB/s");
+        } else if (quick != null) {
+            hdrLive.setText("↓ " + mbs(quick.dl) + "  ↑ " + mbs(quick.ul) + " MB/s");
+        }
+        if (heroDl == null) return;
+        if (testing) {
+            heroDl.setText(testPhase >= SpeedTest.PHASE_DOWN ? mbs(testDl) : "…");
+            heroUl.setText(testPhase >= SpeedTest.PHASE_UP ? mbs(testUl) : "…");
+            String[] ph = {"جاري قياس الاستجابة…", "جاري قياس سرعة التنزيل…", "جاري قياس سرعة الرفع…"};
+            heroStatus.setText(ph[Math.max(0, Math.min(2, testPhase))]);
+            heroBtn.setText("⏳ جاري القياس…");
+            heroBtn.setEnabled(false);
+            heroBtn.setAlpha(0.7f);
+            return;
+        }
+        heroBtn.setEnabled(true);
+        heroBtn.setAlpha(1f);
+        heroBtn.setText("↻ إعادة القياس");
+        if (quick != null) {
+            heroDl.setText(mbs(quick.dl));
+            heroUl.setText(mbs(quick.ul));
+            heroStatus.setText("آخر قياس " + Fmt.ago(quick.time) + "  •  الاستجابة " + quick.pingMs + " ms"
+                    + (quickLabel != null ? "  •  " + quickLabel : ""));
+        } else {
+            heroDl.setText("--");
+            heroUl.setText("--");
+            heroBtn.setText("↻ قياس الآن");
+            heroStatus.setText(quickError != null ? "فشل القياس: " + quickError
+                    : NetUtil.wifiNetwork(this) == null && NetUtil.cellularNetwork(this) != null
+                    ? "على بيانات الهاتف لا يتم القياس تلقائياً لتوفير الباقة (يستهلك حوالي 20–40 ميجا)"
+                    : "اضغط «قياس الآن» لمعرفة سرعة الإنترنت");
+        }
+    }
+
+    /** On Wi-Fi the speed is measured automatically when the app opens (and again after 5 minutes). */
+    private void maybeAutoTest() {
+        if (testing || NetUtil.wifiNetwork(this) == null) return;
+        if (quick == null || System.currentTimeMillis() - quick.time > 5 * 60_000L || !autoTested) {
+            autoTested = true;
+            h.postDelayed(new Runnable() {
+                @Override public void run() { if (tab == TAB_HOME) startQuickTest(); }
+            }, 600);
+        }
+    }
+
+    private void startQuickTest() {
+        if (testing) return;
+        if (WifiSwitcher.isRunning()) { Ui.toast(this, "يوجد فحص للشبكات يعمل الآن"); return; }
+        final Network n = NetUtil.internetNetwork(this);
+        if (n == null) { quickError = "أنت غير متصل بالإنترنت"; quick = null; updateHero(); return; }
+        final boolean wifi = NetUtil.isWifi(this, n);
+        final String ssid = wifi ? NetUtil.currentSsid(this) : null;
+        final String label = NetUtil.activeLabel(this);
+        testing = true;
+        testPhase = SpeedTest.PHASE_PING;
+        testDl = testUl = 0;
+        quickError = null;
+        updateHero();
+        final Runnable refresh = new Runnable() { @Override public void run() { updateHero(); } };
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final SpeedTest.Result r = SpeedTest.run(n, true, new SpeedTest.Progress() {
+                    @Override public void update(int phase, double bps) {
+                        testPhase = phase;
+                        if (phase == SpeedTest.PHASE_DOWN) testDl = bps;
+                        if (phase == SpeedTest.PHASE_UP) testUl = bps;
+                        h.removeCallbacks(refresh);
+                        h.post(refresh);
+                    }
+                });
+                if (r.ok && wifi && ssid != null) Prefs.saveResult(MainActivity.this, ssid, r);
+                h.post(new Runnable() {
+                    @Override public void run() {
+                        testing = false;
+                        if (r.ok) { quick = r; quickLabel = label; }
+                        else { quickError = r.error != null ? r.error : "تعذر الاتصال بخادم القياس"; }
+                        updateHero();
+                    }
+                });
+            }
+        }).start();
     }
 
     private View speedColumn(String label, TextView value) {
@@ -541,6 +680,18 @@ public class MainActivity extends Activity {
                     new View.OnClickListener() { @Override public void onClick(View v) { openSafe(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)); } });
         }
 
+        String sug = Prefs.p(this).getString("suggest", null);
+        if (sug != null && sug.equals(cur)) {
+            Prefs.p(this).edit().remove("suggest").apply();
+        } else if (sug != null) {
+            warning("الشبكة الأسرع الآن هي «" + sug + "» لكن أندرويد منع الانتقال التلقائي.", "الانتقال إلى " + sug,
+                    new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            openSafe(new Intent(Build.VERSION.SDK_INT >= 29 ? Settings.Panel.ACTION_WIFI : Settings.ACTION_WIFI_SETTINGS));
+                        }
+                    });
+        }
+
         content.addView(Ui.section(this, "شبكاتك"));
         SpeedTest.Result r1 = Prefs.lastResult(this, s1), r2 = Prefs.lastResult(this, s2);
         double max = 1;
@@ -575,8 +726,8 @@ public class MainActivity extends Activity {
         sw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton b, boolean on) {
                 Prefs.setAutoSwitch(MainActivity.this, on);
-                if (on) { MonitorService.start(MainActivity.this); Ui.toast(MainActivity.this, "تم التفعيل — أول فحص بعد دقيقة"); }
-                else MonitorService.stop(MainActivity.this);
+                SwitchJob.sync(MainActivity.this);
+                if (on) Ui.toast(MainActivity.this, "تم التفعيل — يعمل في الخلفية بدون إشعارات");
             }
         });
         auto.addView(sw);
@@ -594,7 +745,11 @@ public class MainActivity extends Activity {
             t.setPadding(0, dp(9), 0, dp(9));
             if (sel) t.setBackground(Ui.round(this, Ui.ACCENT, 11));
             t.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { Prefs.setIntervalMin(MainActivity.this, m); showTab(TAB_NETS); }
+                @Override public void onClick(View v) {
+                    Prefs.setIntervalMin(MainActivity.this, m);
+                    SwitchJob.sync(MainActivity.this);
+                    showTab(TAB_NETS);
+                }
             });
             ints.addView(t, new LinearLayout.LayoutParams(0, Ui.WRAP, 1f));
         }
@@ -620,7 +775,7 @@ public class MainActivity extends Activity {
                 "• كل اختبار يستهلك تقريباً 20–100 ميجابايت من الواي فاي.\n"
                         + "• أثناء فحص الشبكة الثانية قد ينقطع الإنترنت لثوانٍ.\n"
                         + "• التطبيق ينتقل فقط إذا كانت الشبكة الأخرى أسرع بـ 10% على الأقل.\n"
-                        + "• إذا رفض أندرويد الانتقال، أضف كلمة مرور الشبكتين أو سيصلك إشعار للانتقال بضغطة.",
+                        + "• إذا رفض أندرويد الانتقال، أضف كلمة مرور الشبكتين، أو سيظهر لك تنبيه في أعلى هذه الصفحة للانتقال بضغطة.\n• يعمل الفحص في الخلفية بدون أي إشعارات.",
                 13, Ui.SUB, false));
         content.addView(note);
 
@@ -770,11 +925,52 @@ public class MainActivity extends Activity {
 
     // ================================================================== TAB 3: blocking
 
+    /** Everything the blocking tab needs, prepared on a background thread (keeps the UI responsive). */
+    private static class BlockData {
+        Set<String> active;
+        List<FirewallStore.Rule> rules;
+        List<GroupStore.Group> groups;
+        final Map<String, List<String>> installed = new HashMap<>();
+        List<AppItem> apps;
+    }
+
+    private boolean showAllApps = false;
+    private Runnable searchRun;
+
+    private void setApps(List<AppItem> items) {
+        if (items == null) items = new ArrayList<>();
+        appsCache = items;
+        appsByPkg.clear();
+        for (AppItem a : items) appsByPkg.put(a.pkg, a);
+    }
+
     private void buildBlock() {
         final long now = System.currentTimeMillis();
-        final Set<String> active = FirewallStore.activePackages(this, now);
-        List<FirewallStore.Rule> rules = FirewallStore.load(this);
+        LinearLayout wait = Ui.card(this);
+        wait.addView(Ui.text(this, "جاري التحميل…", 14, Ui.SUB, false));
+        content.addView(wait);
+        final List<AppItem> cached = appsCache;
+        async(new Callable<BlockData>() {
+            @Override public BlockData call() {
+                BlockData d = new BlockData();
+                d.apps = cached != null ? cached : loadApps();
+                d.active = FirewallStore.activePackages(MainActivity.this, now);
+                d.rules = FirewallStore.load(MainActivity.this);
+                d.groups = GroupStore.load(MainActivity.this);
+                for (GroupStore.Group g : d.groups) d.installed.put(g.id, GroupStore.installed(MainActivity.this, g));
+                return d;
+            }
+        }, new Cb<BlockData>() {
+            @Override public void on(BlockData d) {
+                if (d == null) return;
+                if (appsCache == null) setApps(d.apps);
+                content.removeAllViews();
+                renderBlock(d, now);
+            }
+        });
+    }
 
+    private void renderBlock(final BlockData d, final long now) {
         // ---- status
         LinearLayout st = Ui.card(this);
         LinearLayout top = Ui.hbox(this);
@@ -785,14 +981,14 @@ public class MainActivity extends Activity {
         LinearLayout tt = Ui.vbox(this);
         tt.setPadding(dp(10), 0, 0, 0);
         tt.addView(Ui.text(this, "حظر الإنترنت عن التطبيقات", 16, Ui.TEXT, true));
-        tt.addView(Ui.text(this, active.isEmpty() ? "لا يوجد تطبيق محظور الآن" : "محظور الآن: " + active.size() + " تطبيق",
-                13, active.isEmpty() ? Ui.SUB : Ui.RED, true));
+        tt.addView(Ui.text(this, d.active.isEmpty() ? "لا يوجد تطبيق محظور الآن" : "محظور الآن: " + d.active.size() + " تطبيق",
+                13, d.active.isEmpty() ? Ui.SUB : Ui.RED, true));
         top.addView(tt, Ui.weight());
         st.addView(top);
-        TextView note = Ui.text(this, "يعمل عبر VPN محلي داخل هاتفك فقط، ولا يعمل مع VPN آخر في نفس الوقت.", 12, Ui.SUB, false);
+        TextView note = Ui.text(this, "يعمل عبر VPN محلي داخل هاتفك فقط (يظهر رمز المفتاح 🔑 أعلى الشاشة)، ولا يعمل مع VPN آخر في نفس الوقت. خدمات Google Play لا تُحظر أبداً.", 12, Ui.SUB, false);
         note.setPadding(0, dp(8), 0, 0);
         st.addView(note);
-        if (!rules.isEmpty()) {
+        if (!d.rules.isEmpty()) {
             st.addView(Ui.button(this, "🔓 إعادة الإنترنت لكل التطبيقات", Ui.CARD2, new View.OnClickListener() {
                 @Override public void onClick(View v) {
                     FirewallStore.clear(MainActivity.this);
@@ -806,8 +1002,7 @@ public class MainActivity extends Activity {
 
         // ---- groups
         LinearLayout gh = Ui.hbox(this);
-        TextView sec = Ui.section(this, "مجموعات الحظر (بضغطة واحدة)");
-        gh.addView(sec, Ui.weight());
+        gh.addView(Ui.section(this, "مجموعات الحظر (بضغطة واحدة)"), Ui.weight());
         TextView add = Ui.chip(this, "＋ مجموعة جديدة", Ui.ACCENT);
         add.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { editGroup(null); }
@@ -816,28 +1011,22 @@ public class MainActivity extends Activity {
         alp.topMargin = dp(16);
         gh.addView(add, alp);
         content.addView(gh);
-
-        final List<GroupStore.Group> groups = GroupStore.load(this);
-        if (groups.isEmpty()) {
+        if (d.groups.isEmpty()) {
             LinearLayout c = Ui.card(this);
             c.addView(Ui.text(this, "لا توجد مجموعات. أنشئ مجموعة واختر التطبيقات التي تريد حظرها معاً.", 13, Ui.SUB, false));
             content.addView(c);
         }
-        final LinearLayout groupsBox = Ui.vbox(this);
-        content.addView(groupsBox);
-        withApps(new Runnable() {
-            @Override public void run() {
-                groupsBox.removeAllViews();
-                for (GroupStore.Group g : groups) groupsBox.addView(groupCard(g, active, now));
-            }
-        });
+        for (GroupStore.Group g : d.groups) {
+            List<String> inst = d.installed.get(g.id);
+            content.addView(groupCard(g, inst != null ? inst : new ArrayList<String>(), d.active));
+        }
 
-        // ---- currently blocked list
-        if (!rules.isEmpty()) {
+        // ---- currently blocked
+        if (!d.rules.isEmpty()) {
             content.addView(Ui.section(this, "المحظور حالياً"));
             LinearLayout rc = Ui.card(this);
             PackageManager pm = getPackageManager();
-            for (final FirewallStore.Rule r : rules) {
+            for (final FirewallStore.Rule r : d.rules) {
                 LinearLayout row = Ui.hbox(this);
                 row.setPadding(0, dp(6), 0, dp(6));
                 row.addView(icon(appIcon(pm, r.pkg), 30));
@@ -870,15 +1059,15 @@ public class MainActivity extends Activity {
         final LinearLayout list = Ui.vbox(this);
         lc.addView(list);
         content.addView(lc);
-
-        final Runnable render = new Runnable() {
-            @Override public void run() { renderApps(list, active); }
-        };
+        renderApps(list, d.active);
         searchBox.addTextChangedListener(new SimpleWatcher() {
-            @Override public void afterTextChanged(Editable s) { search = s.toString().trim(); render.run(); }
+            @Override public void afterTextChanged(Editable s) {
+                search = s.toString().trim();
+                if (searchRun != null) h.removeCallbacks(searchRun);
+                searchRun = new Runnable() { @Override public void run() { renderApps(list, d.active); } };
+                h.postDelayed(searchRun, 300);
+            }
         });
-        list.addView(Ui.text(this, "جاري تحميل التطبيقات…", 13, Ui.SUB, false));
-        withApps(render);
     }
 
     private abstract static class SimpleWatcher implements TextWatcher {
@@ -898,8 +1087,7 @@ public class MainActivity extends Activity {
         return e;
     }
 
-    private View groupCard(final GroupStore.Group g, Set<String> active, long now) {
-        final List<String> inst = GroupStore.installed(this, g);
+    private View groupCard(final GroupStore.Group g, final List<String> inst, Set<String> active) {
         int blockedN = 0;
         for (String p : inst) if (active.contains(p)) blockedN++;
         final boolean anyBlocked = blockedN > 0;
@@ -918,11 +1106,11 @@ public class MainActivity extends Activity {
         else top.addView(Ui.chip(this, "✓ الإنترنت يعمل", Ui.ACCENT));
         c.addView(top);
 
+        PackageManager pm = getPackageManager();
         StringBuilder names = new StringBuilder();
         for (int i = 0; i < Math.min(4, inst.size()); i++) {
             if (i > 0) names.append("، ");
-            AppItem a = appsByPkg.get(inst.get(i));
-            names.append(a != null ? a.name : inst.get(i));
+            names.append(label(pm, inst.get(i)));
         }
         if (inst.size() > 4) names.append(" و ").append(inst.size() - 4).append(" غيرها");
         TextView sub = Ui.text(this, inst.isEmpty() ? "المجموعة فارغة — اضغط «تعديل» لاختيار التطبيقات"
@@ -933,7 +1121,6 @@ public class MainActivity extends Activity {
         if (!inst.isEmpty()) {
             LinearLayout icons = Ui.hbox(this);
             icons.setPadding(0, dp(10), 0, 0);
-            PackageManager pm = getPackageManager();
             for (int i = 0; i < Math.min(8, inst.size()); i++) {
                 View iv = icon(appIcon(pm, inst.get(i)), 30);
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(30), dp(30));
@@ -987,8 +1174,23 @@ public class MainActivity extends Activity {
     private void editGroup(final GroupStore.Group original) {
         withApps(new Runnable() {
             @Override public void run() {
-                final Set<String> sel = new HashSet<>(original != null ? original.pkgs : new ArrayList<String>());
-                if (original == null) sel.addAll(GroupStore.detectSocial(MainActivity.this));
+                final Set<String> sel = new HashSet<>();
+                if (original != null) {
+                    for (String p : original.pkgs) if (!GroupStore.isProtected(p)) sel.add(p);
+                } else {
+                    sel.addAll(GroupStore.detectSocial(MainActivity.this));
+                }
+                // apps in the group that are not in the normal list (no launcher icon) – shown so they can be unticked
+                final List<AppItem> extra = new ArrayList<>();
+                PackageManager pm = getPackageManager();
+                for (String p : sel) {
+                    if (appsByPkg.containsKey(p)) continue;
+                    AppItem a = new AppItem();
+                    a.pkg = p;
+                    a.name = label(pm, p);
+                    a.icon = appIcon(pm, p);
+                    extra.add(a);
+                }
 
                 LinearLayout f = Ui.vbox(MainActivity.this);
                 f.setPadding(dp(20), dp(6), dp(20), 0);
@@ -999,18 +1201,24 @@ public class MainActivity extends Activity {
                 final LinearLayout list = Ui.vbox(MainActivity.this);
                 final EditText sbox = searchField();
                 final String[] q = {""};
+                final boolean[] all = {false};
 
-                final Runnable render = new Runnable() {
+                final Runnable[] render = new Runnable[1];
+                render[0] = new Runnable() {
                     @Override public void run() {
                         counter.setText("محدد: " + sel.size() + " تطبيق");
                         list.removeAllViews();
-                        // selected apps first, then the rest
-                        List<AppItem> ordered = new ArrayList<>();
+                        List<AppItem> ordered = new ArrayList<>(extra);
                         for (AppItem a : appsCache) if (sel.contains(a.pkg)) ordered.add(a);
+                        int selectedCount = ordered.size();
                         for (AppItem a : appsCache) if (!sel.contains(a.pkg)) ordered.add(a);
                         String qq = q[0].toLowerCase(Locale.ROOT);
-                        for (final AppItem a : ordered) {
+                        int shown = 0, hidden = 0;
+                        for (int i = 0; i < ordered.size(); i++) {
+                            final AppItem a = ordered.get(i);
                             if (!qq.isEmpty() && !a.name.toLowerCase(Locale.ROOT).contains(qq) && !a.pkg.contains(qq)) continue;
+                            if (qq.isEmpty() && !all[0] && i >= selectedCount && shown >= selectedCount + 40) { hidden++; continue; }
+                            shown++;
                             LinearLayout row = Ui.hbox(MainActivity.this);
                             row.setPadding(0, dp(5), 0, dp(5));
                             final CheckBox cb = new CheckBox(MainActivity.this);
@@ -1031,39 +1239,52 @@ public class MainActivity extends Activity {
                             });
                             list.addView(row);
                         }
+                        if (hidden > 0) {
+                            Button more = Ui.button(MainActivity.this, "عرض كل التطبيقات (" + hidden + " أخرى)", Ui.CARD2,
+                                    new View.OnClickListener() {
+                                        @Override public void onClick(View v) { all[0] = true; render[0].run(); }
+                                    });
+                            list.addView(more);
+                        }
                     }
                 };
 
-                LinearLayout quick = Ui.hbox(MainActivity.this);
+                LinearLayout quickRow = Ui.hbox(MainActivity.this);
                 Button smart = Ui.button(MainActivity.this, "✨ تحديد التواصل تلقائياً", Ui.ACCENT, new View.OnClickListener() {
                     @Override public void onClick(View v) {
                         List<String> soc = GroupStore.detectSocial(MainActivity.this);
                         sel.addAll(soc);
                         Ui.toast(MainActivity.this, "تم تحديد " + soc.size() + " تطبيق تواصل");
-                        render.run();
+                        render[0].run();
                     }
                 });
                 smart.setTextSize(12);
-                quick.addView(smart, new LinearLayout.LayoutParams(0, Ui.WRAP, 1f));
+                quickRow.addView(smart, new LinearLayout.LayoutParams(0, Ui.WRAP, 1f));
                 Button clear = Ui.button(MainActivity.this, "إلغاء التحديد", Ui.CARD2, new View.OnClickListener() {
-                    @Override public void onClick(View v) { sel.clear(); render.run(); }
+                    @Override public void onClick(View v) { sel.clear(); render[0].run(); }
                 });
                 clear.setTextSize(12);
                 LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0, Ui.WRAP, 1f);
                 clp.setMarginStart(dp(8));
-                quick.addView(clear, clp);
-                f.addView(quick);
+                quickRow.addView(clear, clp);
+                f.addView(quickRow);
                 f.addView(counter);
                 LinearLayout.LayoutParams sblp = new LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP);
                 sblp.topMargin = dp(8);
                 f.addView(sbox, sblp);
+                final Runnable[] deb = new Runnable[1];
                 sbox.addTextChangedListener(new SimpleWatcher() {
-                    @Override public void afterTextChanged(Editable s) { q[0] = s.toString().trim(); render.run(); }
+                    @Override public void afterTextChanged(Editable s) {
+                        q[0] = s.toString().trim();
+                        if (deb[0] != null) h.removeCallbacks(deb[0]);
+                        deb[0] = render[0];
+                        h.postDelayed(deb[0], 300);
+                    }
                 });
                 ScrollView sv = new ScrollView(MainActivity.this);
                 sv.addView(list);
                 f.addView(sv, new LinearLayout.LayoutParams(Ui.MATCH, dp(300)));
-                render.run();
+                render[0].run();
 
                 AlertDialog.Builder b = dialog()
                         .setTitle(original == null ? "مجموعة حظر جديدة" : "تعديل المجموعة")
@@ -1076,7 +1297,6 @@ public class MainActivity extends Activity {
                                 g.name = nm.isEmpty() ? "مجموعتي" : nm;
                                 g.pkgs = new ArrayList<>(sel);
                                 GroupStore.upsert(MainActivity.this, g);
-                                // keep blocking consistent if the group is currently blocked
                                 if (original != null) syncBlockedGroup(original, g);
                                 Ui.toast(MainActivity.this, "تم حفظ المجموعة ✅");
                                 showTab(TAB_BLOCK);
@@ -1093,8 +1313,7 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** If an edited group was blocked "until re-enabled", apply the same block to newly added apps
-     *  and lift it from removed ones. */
+    /** If an edited group was blocked, apply the same block to newly added apps and lift it from removed ones. */
     private void syncBlockedGroup(GroupStore.Group before, GroupStore.Group after) {
         List<FirewallStore.Rule> rules = FirewallStore.load(this);
         Map<String, FirewallStore.Rule> byPkg = new HashMap<>();
@@ -1134,14 +1353,12 @@ public class MainActivity extends Activity {
 
     private void withApps(final Runnable r) {
         if (appsCache != null) { r.run(); return; }
+        Ui.toast(this, "جاري تحميل التطبيقات…");
         async(new Callable<List<AppItem>>() {
             @Override public List<AppItem> call() { return loadApps(); }
         }, new Cb<List<AppItem>>() {
             @Override public void on(List<AppItem> items) {
-                if (items == null) items = new ArrayList<>();
-                appsCache = items;
-                appsByPkg.clear();
-                for (AppItem a : items) appsByPkg.put(a.pkg, a);
+                setApps(items);
                 r.run();
             }
         });
@@ -1164,7 +1381,7 @@ public class MainActivity extends Activity {
         PackageManager pm = getPackageManager();
         List<AppItem> out = new ArrayList<>();
         for (ApplicationInfo ai : pm.getInstalledApplications(0)) {
-            if (ai.packageName.equals(getPackageName())) continue;
+            if (ai.packageName.equals(getPackageName()) || GroupStore.isProtected(ai.packageName)) continue;
             if (pm.getLaunchIntentForPackage(ai.packageName) == null) continue;
             if (pm.checkPermission(Manifest.permission.INTERNET, ai.packageName) != PackageManager.PERMISSION_GRANTED) continue;
             AppItem a = new AppItem();
@@ -1179,12 +1396,15 @@ public class MainActivity extends Activity {
         return out;
     }
 
-    private void renderApps(LinearLayout list, Set<String> blocked) {
+    private void renderApps(final LinearLayout list, final Set<String> blocked) {
         list.removeAllViews();
         if (appsCache == null) return;
         String q = search.toLowerCase(Locale.ROOT);
+        int shown = 0, hidden = 0;
         for (final AppItem a : appsCache) {
             if (!q.isEmpty() && !a.name.toLowerCase(Locale.ROOT).contains(q) && !a.pkg.contains(q)) continue;
+            if (q.isEmpty() && !showAllApps && shown >= 40) { hidden++; continue; }
+            shown++;
             LinearLayout row = Ui.hbox(this);
             row.setPadding(0, dp(9), 0, dp(9));
             row.addView(icon(a.icon, 34));
@@ -1201,6 +1421,11 @@ public class MainActivity extends Activity {
                 }
             });
             list.addView(row);
+        }
+        if (hidden > 0) {
+            list.addView(Ui.button(this, "عرض كل التطبيقات (" + hidden + " أخرى)", Ui.CARD2, new View.OnClickListener() {
+                @Override public void onClick(View v) { showAllApps = true; renderApps(list, blocked); }
+            }));
         }
     }
 

@@ -21,17 +21,34 @@ public final class NetUtil {
         return (ConnectivityManager) c.getApplicationContext().getSystemService(Context.CONNECTIVITY_SERVICE);
     }
 
-    /** The current Wi-Fi network (not the VPN), or null. */
-    public static Network wifiNetwork(Context c) {
+    private static Network find(Context c, int transport) {
         ConnectivityManager cm = cm(c);
+        Network fallback = null;
         for (Network n : cm.getAllNetworks()) {
             NetworkCapabilities nc = cm.getNetworkCapabilities(n);
-            if (nc != null && nc.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                    && !nc.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
-                return n;
-            }
+            if (nc == null || nc.hasTransport(NetworkCapabilities.TRANSPORT_VPN) || !nc.hasTransport(transport)) continue;
+            if (!nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue;
+            if (nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return n;
+            if (fallback == null) fallback = n;
         }
-        return null;
+        return fallback;
+    }
+
+    /** The current Wi-Fi network (never the VPN), or null. */
+    public static Network wifiNetwork(Context c) { return find(c, NetworkCapabilities.TRANSPORT_WIFI); }
+
+    public static Network cellularNetwork(Context c) { return find(c, NetworkCapabilities.TRANSPORT_CELLULAR); }
+
+    /** The network the phone uses for internet right now (Wi-Fi first, then mobile data). */
+    public static Network internetNetwork(Context c) {
+        Network w = wifiNetwork(c);
+        return w != null ? w : cellularNetwork(c);
+    }
+
+    public static boolean isWifi(Context c, Network n) {
+        if (n == null) return false;
+        NetworkCapabilities nc = cm(c).getNetworkCapabilities(n);
+        return nc != null && nc.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
     }
 
     public static boolean wifiValidated(Context c) {
@@ -55,17 +72,33 @@ public final class NetUtil {
         }
     }
 
-    public static String activeLabel(Context c) {
-        ConnectivityManager cm = cm(c);
-        Network n = cm.getActiveNetwork();
-        NetworkCapabilities nc = n == null ? null : cm.getNetworkCapabilities(n);
-        if (nc == null) return "غير متصل";
-        if (nc.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-            String s = currentSsid(c);
-            return "متصل عبر الواي فاي: " + (s != null ? s : "(فعّل الموقع لمعرفة الاسم)");
+    /** Link rate between the phone and the router in Mbps (no data used), or -1. */
+    public static int wifiLinkMbps(Context c) {
+        try {
+            if (wifiNetwork(c) == null) return -1;
+            WifiInfo i = wifi(c).getConnectionInfo();
+            return i == null ? -1 : i.getLinkSpeed();
+        } catch (Exception e) {
+            return -1;
         }
-        if (nc.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return "متصل عبر بيانات الهاتف";
-        return "متصل";
+    }
+
+    /** Android's own estimate of the mobile-data bandwidth (kbps), or -1. */
+    public static int[] cellularEstimateKbps(Context c) {
+        Network n = cellularNetwork(c);
+        if (n == null) return null;
+        NetworkCapabilities nc = cm(c).getNetworkCapabilities(n);
+        if (nc == null) return null;
+        return new int[]{nc.getLinkDownstreamBandwidthKbps(), nc.getLinkUpstreamBandwidthKbps()};
+    }
+
+    public static String activeLabel(Context c) {
+        if (wifiNetwork(c) != null) {
+            String s = currentSsid(c);
+            return "واي فاي: " + (s != null ? s : "(فعّل الموقع لمعرفة الاسم)");
+        }
+        if (cellularNetwork(c) != null) return "بيانات الهاتف";
+        return "غير متصل";
     }
 
     public static boolean locationEnabled(Context c) {
