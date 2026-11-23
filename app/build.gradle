@@ -13,8 +13,8 @@ android {
         // switch Wi-Fi networks by itself (needed for auto-switching between M 4g / M 5g).
         // The app is installed directly (not from Google Play), so this is allowed.
         targetSdk 28
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.1"
     }
 
     signingConfigs {
