@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.mhm.net'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.mhm.net"
+        minSdk 24
+        // targetSdk 28 on purpose: it is the last level where Android still lets an app
+        // switch Wi-Fi networks by itself (needed for auto-switching between M 4g / M 5g).
+        // The app is installed directly (not from Google Play), so this is allowed.
+        targetSdk 28
+        versionCode 1
+        versionName "1.0"
+    }
+
+    signingConfigs {
+        release {
+            storeFile file("../keystore/mhm-net.jks")
+            storePassword "mhmnet123"
+            keyAlias "mhmnet"
+            keyPassword "mhmnet123"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+        debug {
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+        disable 'ExpiredTargetSdkVersion', 'OldTargetApi'
+    }
+}
