@@ -1468,11 +1468,11 @@ public class MainActivity extends Activity {
                         if (toMin == fromMin) { Ui.toast(MainActivity.this, "وقت البداية والنهاية متساويان"); return; }
                         applyRules(pkgs, FirewallStore.DAILY, 0, fromMin, toMin, "تم ضبط الحظر اليومي ✅");
                     }
-                }, 7, 0, true);
+                }, 7, 0, false);
                 to.setTitle("وقت انتهاء الحظر (رجوع النت)");
                 to.show();
             }
-        }, 23, 0, true);
+        }, 23, 0, false);
         from.setTitle("وقت بدء الحظر");
         from.show();
     }

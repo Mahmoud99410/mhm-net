@@ -109,6 +109,23 @@ public final class FirewallStore {
         return out;
     }
 
+    /** Next moment a currently-inactive daily rule starts, or -1 if none. */
+    public static synchronized long nextStart(Context c, long now) {
+        long best = -1;
+        for (Rule r : load(c)) {
+            if (r.mode != DAILY || r.from == r.to || isActive(r, now)) continue;
+            Calendar cal = Calendar.getInstance();
+            cal.setTimeInMillis(now);
+            cal.set(Calendar.HOUR_OF_DAY, r.from / 60);
+            cal.set(Calendar.MINUTE, r.from % 60);
+            cal.set(Calendar.SECOND, 0);
+            cal.set(Calendar.MILLISECOND, 0);
+            if (cal.getTimeInMillis() <= now) cal.add(Calendar.DAY_OF_YEAR, 1);
+            if (best < 0 || cal.getTimeInMillis() < best) best = cal.getTimeInMillis();
+        }
+        return best;
+    }
+
     public static String describe(Rule r, long now) {
         switch (r.mode) {
             case UNTIL: return "متبقي " + Fmt.minutes(r.until - now);

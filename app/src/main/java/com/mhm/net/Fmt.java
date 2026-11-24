@@ -36,7 +36,10 @@ public final class Fmt {
         return String.format(Locale.US, "%d ساعة و %d دقيقة", min / 60, min % 60);
     }
 
+    /** 12-hour clock with Arabic AM/PM: 12:00 ص = midnight, 12:00 م = noon. */
     public static String hm(int minutesOfDay) {
-        return String.format(Locale.US, "%02d:%02d", minutesOfDay / 60, minutesOfDay % 60);
+        int h = minutesOfDay / 60, m = minutesOfDay % 60;
+        int h12 = h % 12 == 0 ? 12 : h % 12;
+        return String.format(Locale.US, "%d:%02d %s", h12, m, h < 12 ? "ص" : "م");
     }
 }

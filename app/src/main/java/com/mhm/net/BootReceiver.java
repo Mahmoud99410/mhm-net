@@ -6,6 +6,8 @@ import android.content.Intent;
 
 /** Restarts blocking and the auto-switch job after the phone reboots or the app is updated. */
 public class BootReceiver extends BroadcastReceiver {
+    public static final String ACTION_WAKE = "com.mhm.net.FW_WAKE";
+
     @Override
     public void onReceive(Context c, Intent intent) {
         try {

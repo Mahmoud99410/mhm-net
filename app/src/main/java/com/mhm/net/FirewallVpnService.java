@@ -91,6 +91,20 @@ public class FirewallVpnService extends VpnService {
         return START_STICKY;
     }
 
+    /** Alarm that restarts blocking when the next daily window begins. */
+    static void scheduleWake(Context c) {
+        try {
+            android.app.AlarmManager am = (android.app.AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+            Intent i = new Intent(c, BootReceiver.class).setAction(BootReceiver.ACTION_WAKE);
+            android.app.PendingIntent pi = android.app.PendingIntent.getBroadcast(c, 77, i,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT);
+            long at = FirewallStore.nextStart(c, System.currentTimeMillis());
+            if (at < 0) { am.cancel(pi); return; }
+            if (Build.VERSION.SDK_INT >= 23) am.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, at, pi);
+            else am.setExact(android.app.AlarmManager.RTC_WAKEUP, at, pi);
+        } catch (Exception ignored) {}
+    }
+
     private void leaveForeground() {
         if (foreground) {
             stopForeground(true);
@@ -107,9 +121,13 @@ public class FirewallVpnService extends VpnService {
             if (p.equals(getPackageName()) || GroupStore.isProtected(p)) continue;
             try { pm.getApplicationInfo(p, 0); want.add(p); } catch (PackageManager.NameNotFoundException ignored) {}
         }
-        // Nothing blocked right now (e.g. a daily schedule that has not started yet):
-        // keep a harmless "idle" tunnel so the service stays alive without a notification.
-        if (want.isEmpty()) want = IDLE;
+        // Nothing blocked right now (e.g. outside the daily window): close the tunnel completely
+        // so the key icon disappears, and wake up again at the next start time via an alarm.
+        if (want.isEmpty()) {
+            scheduleWake(this);
+            shutdown();
+            return;
+        }
 
         if (want.equals(current) && tun != null) { leaveForeground(); return; }
 
